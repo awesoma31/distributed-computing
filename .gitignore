@@ -1,0 +1,6 @@
+.DS_Store
+*.o
+*.log
+lab*/pa[0-9]
+lab*/pa[0-9].tar.gz
+lab*/build/
