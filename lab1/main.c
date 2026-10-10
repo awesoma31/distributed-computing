@@ -1,6 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
 
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,14 +27,6 @@ static int parse_args(int argc, char **argv) {
     return (int) x;
 }
 
-static int set_nonblock(int fd) {
-    int flags = fcntl(fd, F_GETFL);
-    if (flags < 0) {
-        return -1;
-    }
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
 static int open_pipes(int n) {
     FILE *out = fopen(pipes_log, "w");
     if (out == NULL) {
@@ -47,9 +38,7 @@ static int open_pipes(int n) {
                 fds[i][j][0] = fds[i][j][1] = -1;
                 continue;
             }
-            if (pipe(fds[i][j]) != 0
-                || set_nonblock(fds[i][j][0]) != 0
-                || set_nonblock(fds[i][j][1]) != 0) {
+            if (pipe(fds[i][j]) != 0) {
                 fclose(out);
                 return -1;
             }

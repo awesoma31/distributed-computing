@@ -1,7 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
-#include <sched.h>
+#include <fcntl.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "ipc.h"
@@ -13,8 +14,8 @@ static int write_full(int fd, const char *buf, size_t len) {
         ssize_t n = write(fd, buf + done, len - done);
         if (n > 0) {
             done += n;
-        } else if (n < 0 && (errno == EAGAIN || errno == EINTR)) {
-            sched_yield();
+        } else if (n < 0 && errno == EINTR) {
+            continue;
         } else {
             return -1;
         }
@@ -28,8 +29,8 @@ static int read_full(int fd, char *buf, size_t len) {
         ssize_t n = read(fd, buf + done, len - done);
         if (n > 0) {
             done += n;
-        } else if (n < 0 && (errno == EAGAIN || errno == EINTR)) {
-            sched_yield();
+        } else if (n < 0 && errno == EINTR) {
+            continue;
         } else {
             return -1;
         }
@@ -37,30 +38,37 @@ static int read_full(int fd, char *buf, size_t len) {
     return 0;
 }
 
-static int try_read(int fd, Message *msg) {
-    char *buf = (char *) msg;
-    size_t hdr = sizeof(MessageHeader);
-    ssize_t n = read(fd, buf, hdr);
-
-    if (n < 0) {
-        return (errno == EAGAIN || errno == EINTR) ? 1 : -1;
-    }
-    if (n == 0) {
-        return -1;
-    }
-    if ((size_t) n < hdr && read_full(fd, buf + n, hdr - n) != 0) {
-        return -1;
-    }
+static int read_body(int fd, Message *msg) {
     if (msg->s_header.s_magic != MESSAGE_MAGIC) {
         return -1;
     }
     if (msg->s_header.s_payload_len > MAX_PAYLOAD_LEN) {
         return -1;
     }
-    if (msg->s_header.s_payload_len > 0) {
-        return read_full(fd, msg->s_payload, msg->s_header.s_payload_len);
+    return read_full(fd, msg->s_payload, msg->s_header.s_payload_len);
+}
+
+static int try_read(int fd, Message *msg) {
+    char *buf = (char *) msg;
+    size_t hdr = sizeof(MessageHeader);
+    int flags = fcntl(fd, F_GETFL);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        return -1;
     }
-    return 0;
+    ssize_t n = read(fd, buf, hdr);
+    int err = errno;
+    fcntl(fd, F_SETFL, flags);
+
+    if (n < 0) {
+        return (err == EAGAIN || err == EINTR) ? 1 : -1;
+    }
+    if (n == 0) {
+        return 1;
+    }
+    if ((size_t) n < hdr && read_full(fd, buf + n, hdr - n) != 0) {
+        return -1;
+    }
+    return read_body(fd, msg);
 }
 
 int send(void *self, local_id dst, const Message *msg) {
@@ -90,17 +98,15 @@ int receive(void *self, local_id from, Message *msg) {
     if (from < 0 || from >= node->count || from == node->id || node->rd[from] < 0) {
         return -1;
     }
-    for (;;) {
-        int res = try_read(node->rd[from], msg);
-        if (res != 1) {
-            return res;
-        }
-        sched_yield();
+    if (read_full(node->rd[from], (char *) msg, sizeof(MessageHeader)) != 0) {
+        return -1;
     }
+    return read_body(node->rd[from], msg);
 }
 
 int receive_any(void *self, Message *msg) {
     node_t *node = self;
+    struct timespec pause = {0, 1000000};
     for (;;) {
         for (local_id i = 0; i < node->count; i++) {
             if (i == node->id || node->rd[i] < 0) {
@@ -111,6 +117,6 @@ int receive_any(void *self, Message *msg) {
                 return res;
             }
         }
-        sched_yield();
+        nanosleep(&pause, NULL);
     }
 }
